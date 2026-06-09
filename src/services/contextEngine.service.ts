@@ -19,6 +19,9 @@ from "../parser/astParser.service";
 import { FileRoleDetector }
 from "../context/fileRoleDetector";
 
+import { CapabilityAnalyzer }
+from "../context/capability.analyzer";
+
 export class ContextEngineService {
 
     private keywordAnalyzer =
@@ -32,15 +35,18 @@ export class ContextEngineService {
 
     private technologyAnalyzer =
         new TechnologyAnalyzer();
-    
+
     private securityAnalyzer =
-    new SecurityAnalyzer();
+        new SecurityAnalyzer();
 
     private astParser =
-    new ASTParserService();
+        new ASTParserService();
 
     private fileRoleDetector =
-    new FileRoleDetector();
+        new FileRoleDetector();
+
+    private capabilityAnalyzer =
+    new CapabilityAnalyzer();    
 
     async analyzeFile(
         fileName: string,
@@ -57,11 +63,11 @@ export class ContextEngineService {
 
         const combinedScores:
             Record<string, number> = {};
-        
+
         const securityAreas =
             this.securityAnalyzer
                 .analyze(content);
-    
+
         const role =
             this.fileRoleDetector
                 .detect(fileName);
@@ -85,38 +91,79 @@ export class ContextEngineService {
 
         const technologies =
             this.technologyAnalyzer
-                .analyze(content);
-        let ast = null;
-        if (
-    fileName.endsWith(".ts") ||
-    fileName.endsWith(".js")
+                .analyze(
+                    fileName,
+                    content
+                );
+
+                console.log(
+    "FILE:",
+    fileName
+);
+
+console.log(
+    "TECH:",
+    technologies
+);
+                if (
+    technologies.length > 0
 ) {
 
-    try {
-
-        ast =
-            this.astParser
-                .analyze(fileName);
-
-    } catch (error) {
-
-        console.log(
-            `AST failed for ${fileName}`
-        );
-
-    }
-     
-
+    console.log(
+        "Technologies:",
+        fileName,
+        technologies
+    );
 
 }
+
+        let ast = null;
+
+        if (
+            fileName.endsWith(".ts") ||
+            fileName.endsWith(".js")
+        ) {
+
+            try {
+
+                ast =
+                    this.astParser
+                        .analyze(
+                            fileName
+                        );
+
+            } catch {
+
+                console.log(
+                    `AST failed for ${fileName}`
+                );
+
+            }
+
+        }
+        const capabilities =
+            this.capabilityAnalyzer
+                .analyze(ast);
+
         return {
+
             fileName,
+
             role,
+
             ...result,
+
             technologies,
+
             securityAreas,
+
             ast,
-            scores: combinedScores
+
+            capabilities,
+
+            scores:
+                combinedScores
+
         };
 
     }

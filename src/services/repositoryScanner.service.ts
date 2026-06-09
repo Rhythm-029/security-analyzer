@@ -54,7 +54,7 @@ fileDetails.push({
     extension: file.split(".").pop(),
     type: fileType,
     size: content.length,
-    content: content.slice(0, 500)
+    content
 });
 
     } catch (error) {

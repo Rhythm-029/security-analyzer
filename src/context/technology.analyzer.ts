@@ -1,68 +1,320 @@
-import { TECHNOLOGY_SIGNALS }
-from "./technology.signals";
-
 export class TechnologyAnalyzer {
 
-    analyze(content: string) {
+    analyze(
+        fileName: string,
+        content: string
+    ): string[] {
 
-        const technologies: string[] = [];
+        const dependencyTechnologies =
+            this.detectFromDependencies(
+                fileName,
+                content
+            );
 
-        for (
-            const [technology, signals]
-            of Object.entries(
-                TECHNOLOGY_SIGNALS
-            )
+        if (
+            dependencyTechnologies.length > 0
         ) {
 
-            let detected = false;
+            return dependencyTechnologies;
 
-            for (
-                const keyword
-                of signals.keywords
+        }
+
+        const importTechnologies =
+            this.detectFromImports(
+                content
+            );
+
+        if (
+            importTechnologies.length > 0
+        ) {
+
+            return importTechnologies;
+
+        }
+
+        return this.detectFromKeywords(
+            content
+        );
+
+    }
+
+    private detectFromDependencies(
+        fileName: string,
+        content: string
+    ): string[] {
+        console.log(
+    "Technology Scan:",
+    fileName
+);
+
+        const technologies =
+            new Set<string>();
+
+        try {
+
+            if (
+                fileName.endsWith(
+                    "package.json"
+                )
             ) {
+                console.log(
+                     "Found package.json"
+                           );
+
+                const packageJson =
+                    JSON.parse(content);
+
+                const dependencies = {
+
+                    ...packageJson.dependencies,
+
+                    ...packageJson.devDependencies
+
+                };
+
+                technologies.add(
+                    "nodejs"
+                );
 
                 if (
-                    content.includes(
-                        keyword
-                    )
+                    dependencies["express"]
                 ) {
 
-                    detected = true;
-                    break;
+                    technologies.add(
+                        "express"
+                    );
+
+                }
+
+                if (
+                    dependencies["mongoose"]
+                ) {
+
+                    technologies.add(
+                        "mongodb"
+                    );
+
+                }
+
+                if (
+                    dependencies["jsonwebtoken"]
+                ) {
+
+                    technologies.add(
+                        "jwt"
+                    );
+
+                }
+
+                if (
+                    dependencies["typescript"]
+                ) {
+
+                    technologies.add(
+                        "typescript"
+                    );
 
                 }
 
             }
 
-            for (
-                const pattern
-                of signals.patterns
+            if (
+                fileName.endsWith(
+                    "pom.xml"
+                )
             ) {
+
+                technologies.add(
+                    "java"
+                );
 
                 if (
                     content.includes(
-                        pattern
+                        "spring-boot"
                     )
                 ) {
 
-                    detected = true;
-                    break;
+                    technologies.add(
+                        "springboot"
+                    );
 
                 }
 
             }
 
-            if (detected) {
+            if (
+                fileName.endsWith(
+                    "requirements.txt"
+                )
+            ) {
 
-                technologies.push(
-                    technology
+                technologies.add(
+                    "python"
+                );
+
+                if (
+                    content.includes(
+                        "django"
+                    )
+                ) {
+
+                    technologies.add(
+                        "django"
+                    );
+
+                }
+
+                if (
+                    content.includes(
+                        "flask"
+                    )
+                ) {
+
+                    technologies.add(
+                        "flask"
+                    );
+
+                }
+
+                if (
+                    content.includes(
+                        "fastapi"
+                    )
+                ) {
+
+                    technologies.add(
+                        "fastapi"
+                    );
+
+                }
+
+            }
+
+            if (
+                fileName.endsWith(
+                    "go.mod"
+                )
+            ) {
+
+                technologies.add(
+                    "golang"
                 );
 
             }
 
+            if (
+                fileName.endsWith(
+                    ".csproj"
+                )
+            ) {
+
+                technologies.add(
+                    ".net"
+                );
+
+            }
+
+        } catch {
+
+            return [];
+
         }
 
-        return technologies;
+        return Array.from(
+            technologies
+        );
+
+    }
+
+    private detectFromImports(
+        content: string
+    ): string[] {
+
+        const technologies =
+            new Set<string>();
+
+        if (
+            content.includes(
+                'from "express"'
+            ) ||
+            content.includes(
+                "require('express')"
+            )
+        ) {
+
+            technologies.add(
+                "express"
+            );
+
+        }
+
+        if (
+            content.includes(
+                "jsonwebtoken"
+            )
+        ) {
+
+            technologies.add(
+                "jwt"
+            );
+
+        }
+
+        if (
+            content.includes(
+                "mongoose"
+            )
+        ) {
+
+            technologies.add(
+                "mongodb"
+            );
+
+        }
+
+        return Array.from(
+            technologies
+        );
+
+    }
+
+    private detectFromKeywords(
+        content: string
+    ): string[] {
+
+        const technologies =
+            new Set<string>();
+
+        if (
+            content.includes(
+                "jwt.sign("
+            ) ||
+            content.includes(
+                "jwt.verify("
+            )
+        ) {
+
+            technologies.add(
+                "jwt"
+            );
+
+        }
+
+        if (
+            content.includes(
+                "mongoose.connect("
+            )
+        ) {
+
+            technologies.add(
+                "mongodb"
+            );
+
+        }
+
+        return Array.from(
+            technologies
+        );
 
     }
 

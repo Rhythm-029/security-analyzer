@@ -34,28 +34,53 @@ export class RepositorySummaryService {
             }
 
             /*
-            -----------------------
-            TECHNOLOGIES
-            -----------------------
-            */
+-----------------------
+TECHNOLOGIES
+-----------------------
+*/
 
-            if (
-                file.context?.technologies
-            ) {
+if (
 
-                for (
-                    const tech of
-                    file.context.technologies
-                ) {
+    file.path.endsWith(
+        "package.json"
+    ) ||
 
-                    technologies.add(
-                        tech
-                    );
+    file.path.endsWith(
+        "pom.xml"
+    ) ||
 
-                }
+    file.path.endsWith(
+        "requirements.txt"
+    ) ||
 
-            }
+    file.path.endsWith(
+        "go.mod"
+    ) ||
 
+    file.path.endsWith(
+        ".csproj"
+    )
+
+) {
+
+    if (
+        file.context?.technologies
+    ) {
+
+        for (
+            const tech of
+            file.context.technologies
+        ) {
+
+            technologies.add(
+                tech
+            );
+
+        }
+
+    }
+
+}
             /*
             -----------------------
             SECURITY AREAS

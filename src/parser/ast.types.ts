@@ -12,7 +12,7 @@ export interface ASTContext {
 
     databaseCalls: string[];
 
-    jwtUsage: string[];
+    functionCalls: string[];
 
     envVariables: string[];
 

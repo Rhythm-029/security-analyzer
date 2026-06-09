@@ -40,7 +40,7 @@ export class ASTParserService {
 
         const databaseCalls: string[] = [];
 
-        const jwtUsage: string[] = [];
+        const functionCalls: string[] = [];
 
         const envVariables: string[] = [];
 
@@ -178,6 +178,16 @@ export class ASTParserService {
 
                     /*
                     --------------------------------
+                    STORE ALL FUNCTION CALLS
+                    --------------------------------
+                    */
+
+                    functionCalls.push(
+                        expression
+                    );
+
+                    /*
+                    --------------------------------
                     ROUTES
                     --------------------------------
                     */
@@ -186,7 +196,11 @@ export class ASTParserService {
                         expression === "router.get" ||
                         expression === "router.post" ||
                         expression === "router.put" ||
-                        expression === "router.delete"
+                        expression === "router.delete" ||
+                        expression === "app.get" ||
+                        expression === "app.post" ||
+                        expression === "app.put" ||
+                        expression === "app.delete"
                     ) {
 
                         const args =
@@ -247,24 +261,7 @@ export class ASTParserService {
 
                     /*
                     --------------------------------
-                    JWT
-                    --------------------------------
-                    */
-
-                    if (
-                        expression === "jwt.sign" ||
-                        expression === "jwt.verify"
-                    ) {
-
-                        jwtUsage.push(
-                            expression
-                        );
-
-                    }
-
-                    /*
-                    --------------------------------
-                    DATABASE
+                    DATABASE CALLS
                     --------------------------------
                     */
 
@@ -275,7 +272,15 @@ export class ASTParserService {
                         ) ||
 
                         expression.includes(
-                            "connect"
+                            "prisma"
+                        ) ||
+
+                        expression.includes(
+                            "sequelize"
+                        ) ||
+
+                        expression.includes(
+                            "typeorm"
                         ) ||
 
                         expression.includes(
@@ -292,6 +297,10 @@ export class ASTParserService {
 
                         expression.includes(
                             "update"
+                        ) ||
+
+                        expression.includes(
+                            "delete"
                         )
 
                     ) {
@@ -348,7 +357,7 @@ export class ASTParserService {
 
             databaseCalls,
 
-            jwtUsage,
+            functionCalls,
 
             envVariables,
 
