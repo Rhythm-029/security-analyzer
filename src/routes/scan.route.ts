@@ -1,124 +1,63 @@
-import { Router } from "express";
-import { RepositoryScannerService } from "../services/repositoryScanner.service";
-import { ContextEngineService } from "../services/contextEngine.service";
-import { RepositorySummaryService } from "../services/repoSummary.service";
-import { FindingEngine }
-from "../security/finding.engine";
-import { SemgrepService }
-from "../semgrep/semgrep.service";
-import { SeverityEngine }
-from "../security/severity.engine";
-import { SecurityReportService }
-from "../report/securityReport.service";
+import { Router, Request, Response } from "express";
+import { ScanOrchestratorService } from "../core/orchestrator/scan-orchestrator.service";
+import { ScanOptions } from "../core/domain/appsec.types";
+import { getDefaultRepositoryPath, normalizeRepositoryPath } from "../config/repository.config";
 
 const router = Router();
+const orchestrator = new ScanOrchestratorService();
 
-const scanner = new RepositoryScannerService();
-const contextEngine = new ContextEngineService();
-const summaryService = new RepositorySummaryService();
+type ScanRequestBody = {
+  repositoryPath?: string;
+  includeSemgrep?: boolean;
+  includeGeneratedFiles?: boolean;
+  maxConcurrency?: number;
+  maxFileSizeBytes?: number;
+};
 
-const findingEngine =
-    new FindingEngine();
-
-const severityEngine =
-    new SeverityEngine();
-const semgrepService =
-    new SemgrepService();
-const reportService =
-    new SecurityReportService();
-
-router.get("/", async (req, res) => {
-
-    try {
-
-        const files = await scanner.scan(
-            "/Users/halfcuptea/Documents/dev/Security-engine/backend"
-        );
-
-        console.log(`Scanned ${files.length} files`);
-      
-        const allFindings = [];
-        const results = [];
-
-        for (const file of files) {
-
-    const context =
-        await contextEngine.analyzeFile(
-            file.absolutePath,
-            file.content || ""
-        );
-
-    const analyzedFile = {
-
-        path: file.path,
-        type: file.type,
-        context
-
-    };
-
-    results.push(
-        analyzedFile
-    );
-
-    const findings =
-        findingEngine.analyze(
-            analyzedFile
-        );
-
-    allFindings.push(
-        ...findings
-    );
-
+function resolveRepositoryPath(req: Request): string | undefined {
+  const body = req.body as ScanRequestBody | undefined;
+  const queryPath = typeof req.query.repositoryPath === "string" ? req.query.repositoryPath : undefined;
+  const rawPath = body?.repositoryPath ?? queryPath ?? getDefaultRepositoryPath();
+  return rawPath ? normalizeRepositoryPath(rawPath) : undefined;
 }
 
-const riskScore =
-    severityEngine.calculate(
-        allFindings
-    );
-const semgrepFindings =
-    await semgrepService
-        .scanRepository(
-            "/Users/halfcuptea/Documents/dev/Security-engine/backend"
-        );
+function resolveOptions(req: Request): ScanOptions {
+  const body = req.body as ScanRequestBody | undefined;
 
-        console.log(
-            `Finished analyzing ${results.length} files`
-        );
+  return {
+    includeSemgrep: body?.includeSemgrep,
+    includeGeneratedFiles: body?.includeGeneratedFiles,
+    maxConcurrency: body?.maxConcurrency,
+    maxFileSizeBytes: body?.maxFileSizeBytes,
+  };
+}
 
-        const repositorySummary =
-            summaryService.summarize(
-                results
-            );
-        const report =
-    reportService.generate(
-        repositorySummary,
-        semgrepFindings,
-        riskScore
-    );
-
-        res.json({
-
-    success: true,
-
-    report
-
-});
-
-    } catch (error) {
-
-        console.error(error);
-
-        res.status(500).json({
-
-            success: false,
-
-            message:
-                "Repository scan failed"
-
-        });
-
+async function handleScan(req: Request, res: Response) {
+  try {
+    const repositoryPath = resolveRepositoryPath(req);
+    if (!repositoryPath) {
+      return res.status(400).json({
+        success: false,
+        message: "repositoryPath is required",
+      });
     }
 
-});
+    const report = await orchestrator.execute(repositoryPath, resolveOptions(req));
+
+    return res.json({
+      success: true,
+      report,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Repository scan failed",
+    });
+  }
+}
+
+router.get("/", handleScan);
+router.post("/", handleScan);
 
 export default router;

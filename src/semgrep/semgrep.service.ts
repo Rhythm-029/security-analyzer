@@ -3,6 +3,7 @@ import { promisify } from "util";
 
 import { SemgrepFinding }
 from "./semgrep.types";
+import { normalizeRepositoryPath } from "../config/repository.config";
 
 const execAsync =
     promisify(exec);
@@ -15,10 +16,19 @@ export class SemgrepService {
 
         try {
 
+            const resolvedRepositoryPath =
+                normalizeRepositoryPath(
+                    repositoryPath
+                );
+
+            if (!resolvedRepositoryPath) {
+                return [];
+            }
+
             const { stdout } =
                 await execAsync(
 
-                    `semgrep scan --config auto --json "${repositoryPath}"`
+                    `semgrep scan --config auto --json "${resolvedRepositoryPath}"`
 
                 );
 
