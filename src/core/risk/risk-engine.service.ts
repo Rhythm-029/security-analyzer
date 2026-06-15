@@ -15,8 +15,17 @@ const SEVERITY_WEIGHTS: Record<SecurityFinding["severity"], number> = {
 
 export class RiskEngineService implements RiskEngineContract {
   assess(findings: SecurityFinding[], context: RepositoryContext): RiskAssessment {
-    const scoredFindings = findings.map(finding => this.scoreFinding(finding, context));
-    const topFindings = scoredFindings.sort((left, right) => right.riskScore - left.riskScore).slice(0, 10);
+    const scoredFindings = findings.map(finding => {
+      const scored = this.scoreFinding(finding, context);
+      finding.riskScore = scored.riskScore;
+      finding.reachability = scored.reachability;
+      finding.exposure = scored.exposure;
+      finding.exploitability = scored.exploitability;
+      finding.criticality = scored.criticality;
+      finding.businessImpact = scored.businessImpact;
+      return finding;
+    });
+    const topFindings = [...scoredFindings].sort((left, right) => right.riskScore - left.riskScore).slice(0, 10);
     const contextBaseline = this.calculateContextBaseline(context);
 
     if (topFindings.length === 0) {

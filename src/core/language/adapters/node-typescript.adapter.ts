@@ -34,17 +34,117 @@ export class NodeTypescriptAdapter implements LanguageAdapter {
       imports.add(importDeclaration.getModuleSpecifierValue());
     });
 
+    sourceFile.getExportDeclarations().forEach(exportDeclaration => {
+      const specifier = exportDeclaration.getModuleSpecifierValue();
+      if (specifier) {
+        imports.add(specifier);
+      }
+    });
+
     const functionCalls = new Set<string>();
     const routes: RouteFact[] = [];
     sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression).forEach((callExpression: CallExpression) => {
-      const expression = callExpression.getExpression().getText();
+      const expressionNode = callExpression.getExpression();
+      const expression = expressionNode.getText();
       functionCalls.add(expression);
+
+      // Handle CommonJS require(...)
+      if (expression === "require") {
+        const args = callExpression.getArguments();
+        if (args.length === 1) {
+          const argText = args[0].getText().replace(/^['"`]|['"`]$/g, "");
+          if (argText) {
+            imports.add(argText);
+          }
+        }
+      }
+
+      // Handle dynamic import(...)
+      if (expression === "import" || expressionNode.getKind() === SyntaxKind.ImportKeyword) {
+        const args = callExpression.getArguments();
+        if (args.length === 1) {
+          const argText = args[0].getText().replace(/^['"`]|['"`]$/g, "");
+          if (argText) {
+            imports.add(argText);
+          }
+        }
+      }
 
       const routeFact = this.tryParseRouteFact(expression, callExpression);
       if (routeFact) {
         routes.push(routeFact);
       }
     });
+
+    // Handle Vercel / Next.js / Serverless API directory routing
+    const relPath = file.relativePath.replace(/\\/g, "/");
+    const apiIndex = relPath.indexOf("api/");
+    if (apiIndex !== -1) {
+      const apiSubpath = relPath.substring(apiIndex);
+      const routePart = "/" + apiSubpath.replace(/\.[a-zA-Z0-9]+$/, "");
+      const normalizedRoutePath = routePart
+        .replace(/\[\.\.\.[a-zA-Z0-9_-]+\]/g, "*")
+        .replace(/\[([a-zA-Z0-9_-]+)\]/g, ":$1");
+
+      const methods: string[] = [];
+      const contentLower = content.toLowerCase();
+      if (contentLower.includes("req.method === 'post'") || contentLower.includes('req.method === "post"') || contentLower.includes("method === 'post'") || contentLower.includes('method === "post"')) {
+        methods.push("POST");
+      }
+      if (contentLower.includes("req.method === 'get'") || contentLower.includes('req.method === "get"') || contentLower.includes("method === 'get'") || contentLower.includes('method === "get"')) {
+        methods.push("GET");
+      }
+      if (contentLower.includes("req.method === 'put'") || contentLower.includes('req.method === "put"') || contentLower.includes("method === 'put'") || contentLower.includes('method === "put"')) {
+        methods.push("PUT");
+      }
+      if (contentLower.includes("req.method === 'delete'") || contentLower.includes('req.method === "delete"') || contentLower.includes("method === 'delete'") || contentLower.includes('method === "delete"')) {
+        methods.push("DELETE");
+      }
+
+      if (methods.length === 0) {
+        methods.push("GET", "POST");
+      }
+
+      const authKeywords = ["authenticate", "passport", "auth", "token", "jwt", "verifytoken", "session"];
+      const hasAuth = authKeywords.some(keyword => contentLower.includes(keyword));
+      const authenticationHint = hasAuth ? "required" : "unknown";
+
+      const pathRegex = /(?:path|url)\s*===?\s*['"](\/[a-zA-Z0-9_/.-]+)['"]/gi;
+      const subroutes = new Set<string>();
+      let pathMatch;
+      while ((pathMatch = pathRegex.exec(content)) !== null) {
+        subroutes.add(pathMatch[1]);
+      }
+
+      const baseRoutePath = normalizedRoutePath.endsWith("/*")
+        ? normalizedRoutePath.slice(0, -2)
+        : normalizedRoutePath;
+
+      if (subroutes.size > 0) {
+        subroutes.forEach(subpath => {
+          const fullPath = `${baseRoutePath.replace(/\/$/, "")}/${subpath.replace(/^\//, "")}`;
+          methods.forEach(method => {
+            routes.push({
+              framework: "vercel",
+              method,
+              path: fullPath,
+              middleware: [],
+              authenticationHint,
+            });
+          });
+        });
+      } else {
+        methods.forEach(method => {
+          routes.push({
+            framework: "vercel",
+            method,
+            path: normalizedRoutePath,
+            middleware: [],
+            authenticationHint,
+          });
+        });
+      }
+    }
 
     const envReferences = new Set<string>();
     sourceFile.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression).forEach((expression: PropertyAccessExpression) => {

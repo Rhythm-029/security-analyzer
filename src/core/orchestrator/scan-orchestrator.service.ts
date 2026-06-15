@@ -21,10 +21,24 @@ export class ScanOrchestratorService {
   async execute(repositoryPath: string, options?: ScanOptions): Promise<AnalysisReport> {
     const analysis = await this.contextEngine.analyze(repositoryPath, options);
     const semgrepFindings = options?.includeSemgrep === false ? [] : await this.semgrepService.scanRepository(repositoryPath);
-    const normalizedFindings = [
+    const rawFindings = [
       ...this.normalizeSemgrepFindings(semgrepFindings, analysis.files),
       ...this.buildStructuralFindings(analysis.files, analysis.context),
     ];
+
+    // Deduplicate findings using Rule ID/Category, FilePath, Line
+    const uniqueFindings = new Map<string, SecurityFinding>();
+    for (const finding of rawFindings) {
+      const lineNum = finding.location?.line || 0;
+      const fileKey = finding.filePath || "";
+      const ruleKey = finding.category || "";
+      const dupKey = `${ruleKey}:${fileKey}:${lineNum}`;
+
+      if (!uniqueFindings.has(dupKey)) {
+        uniqueFindings.set(dupKey, finding);
+      }
+    }
+    const normalizedFindings = Array.from(uniqueFindings.values());
 
     const risk = this.riskEngine.assess(normalizedFindings, analysis.context);
     const recommendations = this.buildRecommendations(normalizedFindings, analysis.context);
@@ -62,6 +76,7 @@ export class ScanOrchestratorService {
         criticality: 30,
         businessImpact: 30,
         riskScore: 0,
+        classification: "security_finding",
       };
     });
   }
@@ -87,6 +102,7 @@ export class ScanOrchestratorService {
           criticality: 5,
           businessImpact: 10,
           riskScore: 0,
+          classification: "hygiene",
         });
       }
 
@@ -107,6 +123,7 @@ export class ScanOrchestratorService {
           criticality: 15,
           businessImpact: 20,
           riskScore: 0,
+          classification: "hygiene",
         });
       }
     }
@@ -117,7 +134,7 @@ export class ScanOrchestratorService {
           id: `graph:unauthenticated-exposure:${exposure.id}`,
           source: "graph",
           category: "unauthenticated_exposure",
-          severity: "HIGH",
+          severity: "MEDIUM",
           confidence: exposure.confidence,
           title: `Potential unauthenticated external surface`,
           description: `An exposed API-like entry point was detected without clear authentication evidence.`,
@@ -129,6 +146,7 @@ export class ScanOrchestratorService {
           criticality: 65,
           businessImpact: 60,
           riskScore: 0,
+          classification: "observation",
         });
       }
     }
@@ -139,24 +157,33 @@ export class ScanOrchestratorService {
   private buildRecommendations(findings: SecurityFinding[], context: AnalysisReport["context"]): string[] {
     const recommendations = new Set<string>();
 
-    if (findings.some(finding => finding.category === "unauthenticated_exposure")) {
-      recommendations.add("Lock down exposed endpoints with explicit authentication and authorization controls.");
+    const sortedFindings = [...findings].sort((left, right) => {
+      const severityWeights = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+      return (severityWeights[right.severity] || 0) - (severityWeights[left.severity] || 0);
+    });
+
+    for (const finding of sortedFindings) {
+      if (finding.category === "unauthenticated_exposure" || finding.category === "missing_auth") {
+        recommendations.add("Require explicit authentication and authorization for exposed entry points.");
+      }
+      if (finding.category === "unused_dependency") {
+        recommendations.add("Remove unused runtime dependencies to shrink attack surface and simplify supply-chain review.");
+      }
+      if (finding.category === "missing_dependency") {
+        recommendations.add("Align imports with declared manifests to restore dependency integrity.");
+      }
     }
 
-    if (findings.some(finding => finding.category === "unused_dependency")) {
-      recommendations.add("Prune unused runtime dependencies and re-run dependency resolution.");
-    }
-
-    if (findings.some(finding => finding.category === "missing_dependency")) {
-      recommendations.add("Restore dependency manifest integrity so imports resolve to declared packages.");
-    }
-
-    if (context.thirdPartyServices.length > 0) {
-      recommendations.add("Review trust boundaries for third-party services and record ownership, data flows, and egress policy.");
+    if (context.securityModules.length === 0 && context.capabilities.some(c => c.category === "authentication" || c.category === "authorization")) {
+      recommendations.add("Isolate identity and access-control logic into a dedicated security boundary.");
     }
 
     if (context.dataStores.length > 0) {
-      recommendations.add("Audit datastore access paths for least privilege, secret management, and input validation.");
+      recommendations.add("Review data-store access paths for least privilege, input validation, and secret handling.");
+    }
+
+    if (context.thirdPartyServices.length > 0) {
+      recommendations.add("Track external service trust boundaries and vendor exposure in policy and inventory.");
     }
 
     if (recommendations.size === 0) {

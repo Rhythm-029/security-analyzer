@@ -74,7 +74,8 @@ export class DependencyAnalyzerService implements DependencyAnalyzerContract {
     }
 
     const dependencies: DependencyDescriptor[] = [];
-    const declaredDependencyNames = new Set<string>();
+    const manifestPaths = manifests.map(m => m.manifestFile);
+
     for (const manifest of manifests) {
       const manifestDependencies = [
         ...manifest.declaredDependencies,
@@ -85,11 +86,12 @@ export class DependencyAnalyzerService implements DependencyAnalyzerContract {
       ];
 
       for (const dependency of manifestDependencies) {
-        declaredDependencyNames.add(dependency.name.toLowerCase());
-      }
+        const usedByFiles = this.resolveUsage(dependency.name, allUsedDependencies, importsByFile)
+          .filter(filePath => {
+            const closest = this.findClosestManifest(filePath, manifestPaths);
+            return closest === manifest.manifestFile;
+          });
 
-      for (const dependency of manifestDependencies) {
-        const usedByFiles = this.resolveUsage(dependency.name, allUsedDependencies, importsByFile);
         const status = this.resolveStatus(dependency, usedByFiles.length > 0);
         dependencies.push({
           ...dependency,
@@ -101,13 +103,35 @@ export class DependencyAnalyzerService implements DependencyAnalyzerContract {
 
     const missingDependencies = new Map<string, Set<string>>();
     for (const [filePath, imports] of importsByFile.entries()) {
+      const closestManifestPath = this.findClosestManifest(filePath, manifestPaths);
+      if (!closestManifestPath) {
+        continue;
+      }
+
+      const manifest = manifests.find(m => m.manifestFile === closestManifestPath);
+      if (!manifest) {
+        continue;
+      }
+
+      const localDeclaredNames = new Set<string>();
+      const manifestDependencies = [
+        ...manifest.declaredDependencies,
+        ...manifest.devDependencies,
+        ...manifest.peerDependencies,
+        ...manifest.optionalDependencies,
+        ...manifest.lockfileDependencies,
+      ];
+      for (const dep of manifestDependencies) {
+        localDeclaredNames.add(dep.name.toLowerCase());
+      }
+
       for (const importSpecifier of imports) {
         const packageName = this.normalizeDependencyName(importSpecifier);
         if (!packageName || this.isBuiltInNodeModule(packageName)) {
           continue;
         }
 
-        if (declaredDependencyNames.has(packageName.toLowerCase())) {
+        if (localDeclaredNames.has(packageName.toLowerCase())) {
           continue;
         }
 
@@ -562,5 +586,25 @@ export class DependencyAnalyzerService implements DependencyAnalyzerContract {
   private firstMatch(input: string, regex: RegExp): string | undefined {
     const match = input.match(regex);
     return match?.[1];
+  }
+
+  private findClosestManifest(filePath: string, manifestPaths: string[]): string | undefined {
+    const normalizedFile = filePath.replace(/\\/g, "/");
+    let closest: string | undefined;
+    let maxMatchLen = -1;
+
+    for (const manifestPath of manifestPaths) {
+      const normalizedManifest = manifestPath.replace(/\\/g, "/");
+      const manifestDir = path.posix.dirname(normalizedManifest);
+
+      if (normalizedFile.startsWith(manifestDir === "." ? "" : `${manifestDir}/`)) {
+        if (manifestDir.length > maxMatchLen) {
+          maxMatchLen = manifestDir.length;
+          closest = manifestPath;
+        }
+      }
+    }
+
+    return closest;
   }
 }

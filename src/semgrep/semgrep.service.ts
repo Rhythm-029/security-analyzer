@@ -27,9 +27,8 @@ export class SemgrepService {
 
             const { stdout } =
                 await execAsync(
-
-                    `semgrep scan --config auto --json "${resolvedRepositoryPath}"`
-
+                    `semgrep scan --config auto --json "${resolvedRepositoryPath}"`,
+                    { maxBuffer: 10 * 1024 * 1024 }
                 );
 
             const result =

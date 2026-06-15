@@ -7,6 +7,7 @@ import {
   DependencyDescriptor,
   DependencyManifestFact,
   ExposureDescriptor,
+  ModuleDescriptor,
   RepositoryContext,
   RepositoryCoverage,
   RepositoryFileDescriptor,
@@ -23,6 +24,11 @@ import { RepositoryGraphService } from "../graph/repository-graph.service";
 import { DependencyAnalyzerService } from "../dependency/dependency-analyzer.service";
 import { CapabilityAnalyzerService } from "../capability/capability-analyzer.service";
 import { ContextEngineContract } from "../contracts/appsec.contracts";
+import { PythonAdapter } from "../language/adapters/python.adapter";
+import { GoAdapter } from "../language/adapters/go.adapter";
+import { JavaAdapter } from "../language/adapters/java.adapter";
+import { DotnetAdapter } from "../language/adapters/dotnet.adapter";
+import { RustAdapter } from "../language/adapters/rust.adapter";
 
 type FileAnalysisState = {
   file: RepositoryFileDescriptor;
@@ -41,6 +47,11 @@ export class ContextEngineService implements ContextEngineContract {
 
   constructor() {
     this.languageRegistry.register(new NodeTypescriptAdapter());
+    this.languageRegistry.register(new PythonAdapter());
+    this.languageRegistry.register(new GoAdapter());
+    this.languageRegistry.register(new JavaAdapter());
+    this.languageRegistry.register(new DotnetAdapter());
+    this.languageRegistry.register(new RustAdapter());
   }
 
   async analyze(repositoryPath: string, options?: ScanOptions): Promise<{
@@ -71,8 +82,12 @@ export class ContextEngineService implements ContextEngineContract {
       if (file.isSource) {
         const adapter = this.languageRegistry.resolve(file);
         if (adapter) {
-          state.facts = await adapter.parse(file, state.content);
-          sourceFactsByFile.set(file.absolutePath, state.facts);
+          try {
+            state.facts = await adapter.parse(file, state.content);
+            sourceFactsByFile.set(file.absolutePath, state.facts);
+          } catch (e) {
+            console.error(`Error parsing source file ${file.absolutePath} with adapter ${adapter.id}:`, e);
+          }
         }
       }
 
@@ -240,85 +255,128 @@ export class ContextEngineService implements ContextEngineContract {
     };
   }
 
+  private mapDirectoryToModule(relativePath: string): string {
+    const normalized = relativePath.replace(/\\/g, "/");
+    
+    if (normalized.includes("core/scanner") || normalized.includes("core\\scanner")) return "Scanner Engine";
+    if (normalized.includes("core/context") || normalized.includes("core\\context")) return "Context Engine";
+    if (normalized.includes("core/risk") || normalized.includes("core\\risk")) return "Risk Engine";
+    if (normalized.includes("core/graph") || normalized.includes("core\\graph")) return "Graph Engine";
+    if (normalized.includes("core/report") || normalized.includes("core\\report")) return "Report Engine";
+    if (normalized.includes("language/adapters") || normalized.includes("language\\adapters")) return "Language Adapters";
+    if (normalized.includes("semgrep/")) return "Semgrep Layer";
+    if (normalized.includes("routes/") || normalized.endsWith("app.ts") || normalized.endsWith("server.ts") || normalized.endsWith("index.js") || normalized.includes("api/")) return "API Layer";
+
+    // Generic fallback based on parent directory
+    const segments = normalized.split("/");
+    if (segments.length > 1) {
+      const parentDir = segments[segments.length - 2];
+      if (parentDir && parentDir !== "src" && parentDir !== "core") {
+        return parentDir.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase()) + " Module";
+      }
+    }
+    return "Core Engine";
+  }
+
   private deriveTechnologies(
     files: RepositoryFileDescriptor[],
     sourceFactsByFile: Map<string, SourceFactSet>,
     dependencyAnalysis: DependencyAnalysisResult,
   ): TechnologyDescriptor[] {
     const technologies = new Map<string, TechnologyDescriptor>();
-    const addTechnology = (id: string, name: string, ecosystem: string, confidence: number, evidence: string[], filesForTechnology: string[]) => {
+    
+    const addTech = (id: string, name: string, framework: string | undefined, confidence: number, evidence: string[]) => {
       const existing = technologies.get(id);
       if (existing) {
+        existing.evidence = Array.from(new Set([...existing.evidence, ...evidence]));
+        existing.confidence = Math.max(existing.confidence, confidence);
+        if (framework) existing.framework = framework;
+      } else {
         technologies.set(id, {
-          ...existing,
-          evidence: Array.from(new Set([...existing.evidence, ...evidence])),
-          files: Array.from(new Set([...existing.files, ...filesForTechnology])),
-          confidence: Math.max(existing.confidence, confidence),
+          id,
+          name,
+          ecosystem: name.toLowerCase(),
+          confidence,
+          evidence,
+          files: [],
+          framework,
         });
-        return;
       }
-
-      technologies.set(id, {
-        id,
-        name,
-        ecosystem,
-        confidence,
-        evidence,
-        files: filesForTechnology,
-      });
     };
 
-    for (const manifest of dependencyAnalysis.manifests) {
-      addTechnology(`tech:${manifest.ecosystem}`, manifest.ecosystem, manifest.ecosystem, 1, [manifest.manifestFile], [manifest.manifestFile]);
+    const pyFiles = files.filter(f => f.extension === "py").length;
+    const goFiles = files.filter(f => f.extension === "go").length;
+    const javaFiles = files.filter(f => f.extension === "java" || f.extension === "jar").length;
+    const csFiles = files.filter(f => f.extension === "cs").length;
+    const rsFiles = files.filter(f => f.extension === "rs").length;
+    const jsTsFiles = files.filter(f => ["js", "jsx", "ts", "tsx", "mjs", "cjs"].includes(f.extension)).length;
+
+    const allImports = new Set<string>();
+    for (const facts of sourceFactsByFile.values()) {
+      facts.imports.forEach(i => allImports.add(i.toLowerCase()));
+    }
+    const allDeps = new Set<string>();
+    dependencyAnalysis.dependencies.forEach(d => allDeps.add(d.name.toLowerCase()));
+
+    // 1. Node.js / JS Ecosystem
+    if (jsTsFiles > 0 || allDeps.has("express") || allImports.has("express")) {
+      let fw = "Vanilla JS/TS";
+      if (allDeps.has("express") || allImports.has("express")) fw = "Express";
+      else if (allDeps.has("@nestjs/core") || allDeps.has("nestjs")) fw = "NestJS";
+      else if (allDeps.has("fastify") || allImports.has("fastify")) fw = "Fastify";
+      else if (allDeps.has("next")) fw = "Next.js";
+      
+      if (allDeps.has("expo") || allDeps.has("expo-router")) fw = "Expo (React Native)";
+      else if (allDeps.has("react-native") || allImports.has("react-native")) fw = "React Native";
+      else if (allDeps.has("react") || allImports.has("react")) fw = "React";
+
+      addTech("tech:nodejs", "Node.js", fw, 1.0, ["Found JavaScript/TypeScript files"]);
     }
 
-    for (const dependency of dependencyAnalysis.dependencies) {
-      const name = dependency.name.toLowerCase();
-      const file = dependency.sourceFile;
+    // 2. Python Ecosystem
+    if (pyFiles > 0 || allDeps.has("django") || allDeps.has("fastapi") || allDeps.has("flask")) {
+      let fw = "Core Python";
+      if (allDeps.has("fastapi") || allImports.has("fastapi")) fw = "FastAPI";
+      else if (allDeps.has("django") || allImports.has("django")) fw = "Django";
+      else if (allDeps.has("flask") || allImports.has("flask")) fw = "Flask";
 
-      if (dependency.ecosystem === "nodejs") {
-        addTechnology("tech:nodejs", "nodejs", "nodejs", 1, [file], [file]);
-      }
-
-      if (name.includes("express")) {
-        addTechnology("tech:express", "express", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("spring") || name.includes("boot")) {
-        addTechnology("tech:springboot", "springboot", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("django")) {
-        addTechnology("tech:django", "django", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("flask")) {
-        addTechnology("tech:flask", "flask", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("fastapi")) {
-        addTechnology("tech:fastapi", "fastapi", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("gin") || name.includes("echo") || name.includes("fiber")) {
-        addTechnology("tech:go-web", "go-web", dependency.ecosystem, 0.9, [dependency.name], [file]);
-      }
-      if (name.includes("entityframework") || name.includes("aspnet") || name.includes("microsoft.aspnetcore")) {
-        addTechnology("tech:dotnet", ".net", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("rails")) {
-        addTechnology("tech:rails", "rails", dependency.ecosystem, 0.95, [dependency.name], [file]);
-      }
-      if (name.includes("actix") || name.includes("axum") || name.includes("rocket")) {
-        addTechnology("tech:rust-web", "rust-web", dependency.ecosystem, 0.9, [dependency.name], [file]);
-      }
+      addTech("tech:python", "Python", fw, 1.0, ["Found Python files"]);
     }
 
-    for (const [filePath, facts] of sourceFactsByFile.entries()) {
-      if (facts.imports.some(specifier => specifier.includes("express"))) {
-        addTechnology("tech:express", "express", "nodejs", 0.9, [filePath], [filePath]);
-      }
-      if (facts.imports.some(specifier => specifier.includes("django"))) {
-        addTechnology("tech:django", "django", "python", 0.9, [filePath], [filePath]);
-      }
-      if (facts.imports.some(specifier => specifier.includes("fastapi"))) {
-        addTechnology("tech:fastapi", "fastapi", "python", 0.9, [filePath], [filePath]);
-      }
+    // 3. Go Ecosystem
+    if (goFiles > 0 || allDeps.has("github.com/gin-gonic/gin") || allImports.has("github.com/gin-gonic/gin")) {
+      let fw = "Core Go";
+      if (allDeps.has("github.com/gin-gonic/gin") || allImports.has("github.com/gin-gonic/gin")) fw = "Gin";
+      else if (allDeps.has("github.com/gofiber/fiber") || allImports.has("github.com/gofiber/fiber")) fw = "Fiber";
+
+      addTech("tech:go", "Go", fw, 1.0, ["Found Go source files"]);
+    }
+
+    // 4. Java Ecosystem
+    if (javaFiles > 0 || allDeps.has("spring-core") || allDeps.has("spring-boot")) {
+      let fw = "Core Java";
+      if (allDeps.has("spring-core") || allDeps.has("spring-boot") || allImports.has("org.springframework")) fw = "Spring Boot";
+      if (allDeps.has("hibernate") || allImports.has("org.hibernate")) fw = fw === "Core Java" ? "Hibernate" : `${fw} + Hibernate`;
+
+      addTech("tech:java", "Java", fw, 1.0, ["Found Java files"]);
+    }
+
+    // 5. .NET Ecosystem
+    if (csFiles > 0 || allDeps.has("microsoft.aspnetcore") || allDeps.has("microsoft.entityframeworkcore")) {
+      let fw = "Core .NET";
+      if (allDeps.has("microsoft.aspnetcore") || allImports.has("microsoft.aspnetcore")) fw = "ASP.NET Core";
+      if (allDeps.has("microsoft.entityframeworkcore") || allImports.has("microsoft.entityframeworkcore")) fw = fw === "Core .NET" ? "Entity Framework" : `${fw} + Entity Framework`;
+
+      addTech("tech:dotnet", ".NET", fw, 1.0, ["Found C# source files"]);
+    }
+
+    // 6. Rust Ecosystem
+    if (rsFiles > 0 || allDeps.has("actix-web") || allDeps.has("rocket")) {
+      let fw = "Core Rust";
+      if (allDeps.has("actix-web") || allImports.has("actix-web") || allImports.has("actix")) fw = "Actix-Web";
+      else if (allDeps.has("rocket") || allImports.has("rocket")) fw = "Rocket";
+
+      addTech("tech:rust", "Rust", fw, 1.0, ["Found Rust source files"]);
     }
 
     return Array.from(technologies.values());
@@ -328,58 +386,44 @@ export class ContextEngineService implements ContextEngineContract {
     files: RepositoryFileDescriptor[],
     sourceFactsByFile: Map<string, SourceFactSet>,
     dependencyAnalysis: DependencyAnalysisResult,
-  ) {
-    const modules = new Map<string, {
-      id: string;
-      name: string;
-      kind: "application" | "service" | "package" | "library" | "boundary" | "module" | "component";
-      files: string[];
-      imports: string[];
-      exports: string[];
-      confidence: number;
-      evidence: string[];
-    }>();
-
-    const moduleRootByFile = new Map<string, string>();
-    const manifestRoots = files.filter(file => file.isManifest).map(file => path.posix.dirname(file.relativePath));
+  ): ModuleDescriptor[] {
+    const modules = new Map<string, ModuleDescriptor>();
 
     for (const file of files) {
-      const root = this.findModuleRoot(file.relativePath, manifestRoots);
-      moduleRootByFile.set(file.absolutePath, root);
-      const moduleId = `module:${root}`;
-      const moduleName = root === "." ? path.posix.basename(file.relativePath).split("/")[0] || "root" : root;
+      if (!file.isSource && !file.isManifest) {
+        continue;
+      }
 
-      const existing = modules.get(moduleId);
+      const moduleName = this.mapDirectoryToModule(file.relativePath);
+      const moduleId = `module:${moduleName.toLowerCase().replace(/\s+/g, "-")}`;
+      
       const facts = sourceFactsByFile.get(file.absolutePath);
       const imports = facts?.imports ?? [];
       const exports = facts?.exports ?? [];
+
+      const existing = modules.get(moduleId);
+      
+      let kind: ModuleDescriptor["kind"] = "module";
+      if (moduleName.endsWith("Engine")) kind = "service";
+      else if (moduleName.endsWith("Layer")) kind = "boundary";
+      else if (moduleName.endsWith("Adapters")) kind = "library";
 
       if (!existing) {
         modules.set(moduleId, {
           id: moduleId,
           name: moduleName,
-          kind: file.isManifest ? "package" : file.isSource ? "module" : "component",
+          kind,
           files: [file.absolutePath],
-          imports,
-          exports,
-          confidence: file.isManifest ? 1 : 0.7,
+          imports: Array.from(imports),
+          exports: Array.from(exports),
+          confidence: 0.9,
           evidence: [file.relativePath],
         });
       } else {
         existing.files.push(file.absolutePath);
         existing.imports = Array.from(new Set([...existing.imports, ...imports]));
         existing.exports = Array.from(new Set([...existing.exports, ...exports]));
-        existing.evidence = Array.from(new Set([...existing.evidence, file.relativePath]));
-        existing.confidence = Math.max(existing.confidence, file.isManifest ? 1 : 0.7);
-      }
-    }
-
-    for (const dependency of dependencyAnalysis.dependencies) {
-      const root = moduleRootByFile.get(dependency.sourceFile) ?? path.posix.dirname(dependency.sourceFile);
-      const moduleId = `module:${root}`;
-      const existing = modules.get(moduleId);
-      if (existing) {
-        existing.imports = Array.from(new Set([...existing.imports, dependency.name]));
+        existing.evidence.push(file.relativePath);
       }
     }
 
@@ -390,297 +434,163 @@ export class ContextEngineService implements ContextEngineContract {
     files: RepositoryFileDescriptor[],
     sourceFactsByFile: Map<string, SourceFactSet>,
     dependencyAnalysis: DependencyAnalysisResult,
-) {
-
+  ) {
     const securityModules = new Map<string, {
-        id: string;
-        name: string;
-        category:
-            | "authentication"
-            | "authorization"
-            | "crypto"
-            | "secret_management"
-            | "input_validation"
-            | "access_control"
-            | "session_management"
-            | "policy"
-            | "other";
-        files: string[];
-        evidence: string[];
-        confidence: number;
+      id: string;
+      name: string;
+      category:
+        | "authentication"
+        | "authorization"
+        | "crypto"
+        | "secret_management"
+        | "input_validation"
+        | "access_control"
+        | "session_management"
+        | "policy"
+        | "other";
+      files: string[];
+      evidence: string[];
+      confidence: number;
     }>();
 
     const add = (
-        name: string,
-        category:
-            | "authentication"
-            | "authorization"
-            | "crypto"
-            | "secret_management"
-            | "input_validation"
-            | "access_control"
-            | "session_management"
-            | "policy"
-            | "other",
-        filePath: string,
-        evidence: string[],
-        confidence: number
+      name: string,
+      category:
+        | "authentication"
+        | "authorization"
+        | "crypto"
+        | "secret_management"
+        | "input_validation"
+        | "access_control"
+        | "session_management"
+        | "policy"
+        | "other",
+      filePath: string,
+      evidence: string[],
+      confidence: number
     ) => {
+      const id = `security:${name}`;
+      const existing = securityModules.get(id);
 
-        const id =
-            `security:${name}`;
+      if (!existing) {
+        securityModules.set(id, {
+          id,
+          name,
+          category,
+          files: [filePath],
+          evidence,
+          confidence
+        });
+        return;
+      }
 
-        const existing =
-            securityModules.get(id);
-
-        if (!existing) {
-
-            securityModules.set(id, {
-                id,
-                name,
-                category,
-                files: [filePath],
-                evidence,
-                confidence
-            });
-
-            return;
-
-        }
-
-        existing.files =
-            Array.from(
-                new Set([
-                    ...existing.files,
-                    filePath
-                ])
-            );
-
-        existing.evidence =
-            Array.from(
-                new Set([
-                    ...existing.evidence,
-                    ...evidence
-                ])
-            );
-
-        existing.confidence =
-            Math.max(
-                existing.confidence,
-                confidence
-            );
-
+      existing.files = Array.from(new Set([...existing.files, filePath]));
+      existing.evidence = Array.from(new Set([...existing.evidence, ...evidence]));
+      existing.confidence = Math.max(existing.confidence, confidence);
     };
 
     const authenticationIndicators = [
-
-        "jwt.sign",
-        "jwt.verify",
-
-        "passport.authenticate",
-        "passport.use",
-
-        "oauth.authenticate",
-
-        "securitycontextholder",
-        "authenticationmanager"
-
+      "jwt.sign",
+      "jwt.verify",
+      "passport.authenticate",
+      "passport.use",
+      "oauth.authenticate",
+      "securitycontextholder",
+      "authenticationmanager"
     ];
 
     const authorizationIndicators = [
-
-        "authorize",
-        "checkpermission",
-        "hasrole",
-        "hasauthority",
-
-        "rbac",
-        "acl"
-
+      "authorize",
+      "checkpermission",
+      "hasrole",
+      "hasauthority",
+      "rbac",
+      "acl"
     ];
 
     const cryptoIndicators = [
-
-        "bcrypt.hash",
-        "bcrypt.compare",
-
-        "crypto.createhash",
-        "crypto.encrypt",
-        "crypto.decrypt",
-
-        "openssl"
-
+      "bcrypt.hash",
+      "bcrypt.compare",
+      "crypto.createhash",
+      "crypto.encrypt",
+      "crypto.decrypt",
+      "openssl"
     ];
 
-    for (
-        const [filePath, facts]
-        of sourceFactsByFile.entries()
-    ) {
+    for (const [filePath, facts] of sourceFactsByFile.entries()) {
+      const lowerCalls = facts.functionCalls.map(call => call.toLowerCase());
 
-        const lowerCalls =
-            facts.functionCalls.map(
-                call =>
-                    call.toLowerCase()
-            );
-
-        if (
-
-            lowerCalls.some(
-                call =>
-                    authenticationIndicators.some(
-                        indicator =>
-                            call.includes(
-                                indicator
-                            )
-                    )
+      if (
+        lowerCalls.some(
+          call =>
+            authenticationIndicators.some(
+              indicator => call.includes(indicator)
             )
+        )
+      ) {
+        add("authentication", "authentication", filePath, facts.functionCalls, 0.95);
+      }
 
-        ) {
-
-            add(
-                "authentication",
-                "authentication",
-                filePath,
-                facts.functionCalls,
-                0.95
-            );
-
-        }
-
-        if (
-
-            lowerCalls.some(
-                call =>
-                    authorizationIndicators.some(
-                        indicator =>
-                            call.includes(
-                                indicator
-                            )
-                    )
+      if (
+        lowerCalls.some(
+          call =>
+            authorizationIndicators.some(
+              indicator => call.includes(indicator)
             )
+        )
+      ) {
+        add("authorization", "authorization", filePath, facts.functionCalls, 0.9);
+      }
 
-        ) {
-
-            add(
-                "authorization",
-                "authorization",
-                filePath,
-                facts.functionCalls,
-                0.9
-            );
-
-        }
-
-        if (
-
-            lowerCalls.some(
-                call =>
-                    cryptoIndicators.some(
-                        indicator =>
-                            call.includes(
-                                indicator
-                            )
-                    )
+      if (
+        lowerCalls.some(
+          call =>
+            cryptoIndicators.some(
+              indicator => call.includes(indicator)
             )
+        )
+      ) {
+        add("crypto", "crypto", filePath, facts.functionCalls, 0.95);
+      }
 
-        ) {
+      const sensitiveEnvKeywords = ["key", "secret", "token", "password", "pwd", "auth", "cred", "cert", "private", "hash", "salt"];
+      const SENSITIVE_EXCLUDE = ["port", "home", "node_env", "repository_path", "host", "path"];
 
-            add(
-                "crypto",
-                "crypto",
-                filePath,
-                facts.functionCalls,
-                0.95
-            );
+      const sensitiveReferences = facts.envReferences.filter(ref => {
+        const lower = ref.toLowerCase();
+        const matchesSensitive = sensitiveEnvKeywords.some(keyword => lower.includes(keyword));
+        const isExcluded = SENSITIVE_EXCLUDE.some(excl => lower.endsWith("." + excl) || lower.endsWith("['" + excl + "']") || lower.endsWith("[\"" + excl + "\"]"));
+        return matchesSensitive && !isExcluded;
+      });
 
-        }
-
-        if (
-            facts.envReferences.length > 0
-        ) {
-
-            add(
-                "secret_management",
-                "secret_management",
-                filePath,
-                facts.envReferences,
-                0.85
-            );
-
-        }
-
+      if (sensitiveReferences.length > 0) {
+        add("secret_management", "secret_management", filePath, sensitiveReferences, 0.85);
+      }
     }
 
-    for (
-        const dependency
-        of dependencyAnalysis.dependencies
-    ) {
+    for (const dependency of dependencyAnalysis.dependencies) {
+      const name = dependency.name.toLowerCase();
+      if (
+        name === "jsonwebtoken" ||
+        name === "passport" ||
+        name === "passport-jwt"
+      ) {
+        add("authentication", "authentication", dependency.sourceFile, [dependency.name], 0.85);
+      }
 
-        const name =
-            dependency.name
-                .toLowerCase();
+      if (name === "bcrypt" || name === "bcryptjs") {
+        add("crypto", "crypto", dependency.sourceFile, [dependency.name], 0.85);
+      }
 
-        if (
-
-            name === "jsonwebtoken"
-            || name === "passport"
-            || name === "passport-jwt"
-
-        ) {
-
-            add(
-                "authentication",
-                "authentication",
-                dependency.sourceFile,
-                [dependency.name],
-                0.85
-            );
-
-        }
-
-        if (
-
-            name === "bcrypt"
-            || name === "bcryptjs"
-
-        ) {
-
-            add(
-                "crypto",
-                "crypto",
-                dependency.sourceFile,
-                [dependency.name],
-                0.85
-            );
-
-        }
-
-        if (
-
-            name.includes("vault")
-            || name.includes("kms")
-
-        ) {
-
-            add(
-                "secret_management",
-                "secret_management",
-                dependency.sourceFile,
-                [dependency.name],
-                0.9
-            );
-
-        }
-
+      if (name.includes("vault") || name.includes("kms")) {
+        add("secret_management", "secret_management", dependency.sourceFile, [dependency.name], 0.9);
+      }
     }
 
     void files;
 
-    return Array.from(
-        securityModules.values()
-    );
-
-}
+    return Array.from(securityModules.values());
+  }
 
   private deriveServices(
     files: RepositoryFileDescriptor[],
@@ -800,61 +710,16 @@ export class ContextEngineService implements ContextEngineContract {
     }
 
     for (const [filePath, facts] of sourceFactsByFile.entries()) {
-      const datastoreIndicators = [
+      const lowerCalls = facts.functionCalls.map(call => call.toLowerCase());
+      const nosqlIndicators = ["mongoose.connect", "mongoclient.connect"];
+      const sqlIndicators = ["prismaclient", "sequelize", "typeorm", "datasource", "drivermanager.getconnection", "jdbc"];
 
-  "mongoose.connect",
-  "mongoclient.connect",
-
-  "prismaclient",
-
-  "sequelize",
-
-  "typeorm",
-
-  "datasource",
-
-  "drivermanager.getconnection",
-
-  "jdbc"
-
-];
-
-for (
-  const [filePath, facts]
-  of sourceFactsByFile.entries()
-) {
-
-  const lowerCalls =
-    facts.functionCalls.map(
-      call =>
-        call.toLowerCase()
-    );
-
-  if (
-
-    lowerCalls.some(
-      call =>
-        datastoreIndicators.some(
-          indicator =>
-            call.includes(
-              indicator
-            )
-        )
-    )
-
-  ) {
-
-    add(
-      "database",
-      "sql",
-      filePath,
-      facts.functionCalls,
-      0.90
-    );
-
-  }
-
-}
+      if (lowerCalls.some(call => nosqlIndicators.some(indicator => call.includes(indicator)))) {
+        add("database_nosql", "nosql", filePath, facts.functionCalls, 0.90);
+      }
+      if (lowerCalls.some(call => sqlIndicators.some(indicator => call.includes(indicator)))) {
+        add("database_sql", "sql", filePath, facts.functionCalls, 0.90);
+      }
     }
 
     void files;

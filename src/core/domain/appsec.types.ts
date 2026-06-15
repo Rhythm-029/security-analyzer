@@ -115,6 +115,7 @@ export interface TechnologyDescriptor {
   confidence: number;
   evidence: string[];
   files: string[];
+  framework?: string;
 }
 
 export interface DependencyDescriptor {
@@ -300,6 +301,7 @@ export interface SecurityFinding {
   criticality: number;
   businessImpact: number;
   riskScore: number;
+  classification?: "security_finding" | "observation" | "hygiene";
 }
 
 export interface RiskFactors {
